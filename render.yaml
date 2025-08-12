@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: nexiris-server
+    env: python
+    buildCommand: ""
+    startCommand: gunicorn app:app
+    plan: free
+    envVars:
+      - key: REPLICATE_API_TOKEN
+        sync: false
