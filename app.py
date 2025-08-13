@@ -1,11 +1,11 @@
 # app.py — FLUX-SCHNELL (Replicate) — minimal, UTF-8 safe, texte->image only
-import os, sys, json
+import os, sys
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 import replicate
 
-# Force UTF-8 sur Windows pour éviter les erreurs ASCII
+# ---- UTF-8 safe (Windows) ----
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -13,10 +13,16 @@ except Exception:
     pass
 
 app = Flask(__name__)
-CORS(app)  # autoriser tout par défaut
+CORS(app)  # autorise tout
 
-client = replicate.Client(api_token=os.environ.get("REPLICATE_API_TOKEN", ""))
+# ---- Config / Clients ----
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN", "")
+# Toujours un slug SANS version pour éviter "Invalid version"
+MODEL_SLUG = (os.environ.get("SIMPLE_MODEL") or "black-forest-labs/flux-schnell").split(":")[0]
 
+client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+
+# ---- Helpers ----
 def merge_data():
     data = request.get_json(silent=True) or {}
     data.update(request.form.to_dict(flat=True))
@@ -37,6 +43,25 @@ def first_url(out):
         return None
     return pick(out)
 
+# ---- Routes basiques ----
+@app.get("/")
+def home():
+    return jsonify({
+        "ok": True,
+        "service": "tahiti-flux",
+        "model": MODEL_SLUG,
+        "endpoints": {"/health": "GET", "/generate": "POST"}
+    }), 200
+
+@app.get("/health")
+def health():
+    return jsonify({
+        "ok": True,
+        "has_token": bool(REPLICATE_API_TOKEN),
+        "model": MODEL_SLUG
+    }), 200
+
+# ---- Handler erreurs JSON ----
 @app.errorhandler(Exception)
 def on_error(e):
     code = e.code if isinstance(e, HTTPException) else 500
@@ -47,18 +72,18 @@ def on_error(e):
         pass
     return jsonify({"ok": False, "type": e.__class__.__name__, "error": msg}), code
 
+# ---- Génération texte -> image ----
 @app.post("/generate")
 def generate():
-    if not os.environ.get("REPLICATE_API_TOKEN"):
+    if not REPLICATE_API_TOKEN:
         return jsonify({"ok": False, "error": "Missing REPLICATE_API_TOKEN"}), 500
 
     data = merge_data()
-
     prompt = str(data.get("prompt", "") or "").strip()
     if not prompt:
         return jsonify({"ok": False, "error": "Missing 'prompt'"}), 400
 
-    # Params simples & robustes
+    # Params robustes
     aspect_ratio = str(data.get("aspect_ratio", "1:1") or "1:1").strip()
     mp           = str(data.get("mp", "1") or "1").strip()
     fmt          = str(data.get("format", "webp") or "webp").strip()
@@ -93,17 +118,16 @@ def generate():
         inputs["seed"] = seed
 
     try:
-        # Run avec le slug SANS version
-        out = client.run("black-forest-labs/flux-schnell", input=inputs)
+        out = client.run(MODEL_SLUG, input=inputs)  # slug sans version
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
     url = first_url(out)
     if not url:
         return jsonify({"ok": False, "error": "No image URL from model", "raw": out}), 502
-    return jsonify({"ok": True, "image_url": url}), 200
+    return jsonify({"ok": True, "image_url": url, "model": MODEL_SLUG}), 200
 
+# Local only (Render utilise gunicorn, donc ce bloc n'est pas utilisé en prod)
 if __name__ == "__main__":
-    # Tips Windows: -X utf8 pour forcer l'UTF-8 si besoin
     app.run(host="127.0.0.1", port=10000, debug=False, use_reloader=False)
 
